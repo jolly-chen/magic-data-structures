@@ -1,6 +1,6 @@
 // SoA structure with an AoS interface using P2996 reflection and P3294 token injection.
 // Each array in the SoA is allocated in a contiguous storage container.
-// Run via: https://godbolt.org/z/jEr6zhE3s
+// Run via https://godbolt.org/z/Gh4n4oz1c
 
 #include <experimental/meta>
 #include <iostream>
@@ -75,21 +75,23 @@ class vector {
             // TODO: (jagged) vector members
             // if constexpr (is_specialization<typename[:type_of(e):], std::vector>::value) {
             //     for (auto elem : data) {
-            //         sizes[m_idx] += elem.[:e:].size() * sizeof([:type_of(e):] ::value_type);
+            //         byte_sizes[m_idx] += align_size(
+            //             elem.[:e:].size() * sizeof([:type_of(e):] ::value_type), Alignment);
+            //         sizes[m_idx] += elem.[:e:].size();
             //     }
             // } else {
-            // }
-
             byte_sizes[m_idx] = align_size(data.size() * sizeof(typename[:type_of(e):]), Alignment);
             sizes[m_idx] = data.size();
+            // }
+
             std::cout << "_" << name_of(e) << " = " << sizes[m_idx] << " elements in "
                       << byte_sizes[m_idx] << " bytes\n";
             total_size += byte_sizes[m_idx];
             m_idx++;
         };
 
-        storage.reserve(total_size);
-        std::cout << "reserved " << total_size << " bytes in total\n\n";
+        storage.resize(total_size);
+        std::cout << "storage of " << total_size << " bytes in total\n\n";
 
         // Loop over storage vectors
         size_t offset = 0;
@@ -114,9 +116,10 @@ class vector {
             size_t e_idx = 0;
             for (auto elem : data) {
                 consteval {
-                    // e.g., _x[e_idx] = elem.x;
+                    // e.g, new (_x[e_idx]) double(elem.x);
                     queue_injection(^{
-                      \id("_"sv, name_of(e))[e_idx] = elem.\id(name_of(e));
+                      new (&\id("_"sv, name_of(e))[e_idx]) decltype(elem.\id(name_of(e)))(
+                          elem.\id(name_of(e)));
                     });
                 }
                 e_idx++;
