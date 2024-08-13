@@ -1,18 +1,12 @@
 // SoA structure with an AoS interface using P2996 reflection and P3294 token injection.
 // Each array in the SoA is allocated in a contiguous storage container.
-// Run via https://godbolt.org/z/Gh4n4oz1c
+// Run via https://godbolt.org/z/r57Phe8do
 
 #include <experimental/meta>
 #include <iostream>
 #include <span>
 
 namespace mds {
-
-// template <typename Test, template <typename...> class Ref>
-// struct is_specialization : std::false_type {};
-
-// template <template <typename...> class Ref, typename... Args>
-// struct is_specialization<Ref<Args...>, Ref> : std::true_type {};
 
 using namespace std::literals;
 
@@ -65,24 +59,16 @@ class vector {
         auto n_members = [:std::meta::reflect_value(nonstatic_data_members_of(^T).size()):];
 
         size_t total_size = 0;
-        std::vector<size_t> byte_sizes(n_members);
+        std::vector<size_t> byte_sizes;
+        byte_sizes.reserve(n_members);
         sizes.reserve(n_members);
 
         // Compute the number of bytes needed for each storage vector and the
         // total number of storage bytes.
         size_t m_idx = 0;
         [:expand(nonstatic_data_members_of(^T)):] >> [&]<auto e> {
-            // TODO: (jagged) vector members
-            // if constexpr (is_specialization<typename[:type_of(e):], std::vector>::value) {
-            //     for (auto elem : data) {
-            //         byte_sizes[m_idx] += align_size(
-            //             elem.[:e:].size() * sizeof([:type_of(e):] ::value_type), Alignment);
-            //         sizes[m_idx] += elem.[:e:].size();
-            //     }
-            // } else {
-            byte_sizes[m_idx] = align_size(data.size() * sizeof(typename[:type_of(e):]), Alignment);
-            sizes[m_idx] = data.size();
-            // }
+            byte_sizes.push_back(align_size(data.size() * sizeof(typename[:type_of(e):]), Alignment));
+            sizes.push_back(data.size());
 
             std::cout << "_" << name_of(e) << " = " << sizes[m_idx] << " elements in "
                       << byte_sizes[m_idx] << " bytes\n";
@@ -116,7 +102,7 @@ class vector {
             size_t e_idx = 0;
             for (auto elem : data) {
                 consteval {
-                    // e.g, new (_x[e_idx]) double(elem.x);
+                    // e.g, new (&_x[e_idx]) double(elem.x);
                     queue_injection(^{
                       new (&\id("_"sv, name_of(e))[e_idx]) decltype(elem.\id(name_of(e)))(
                           elem.\id(name_of(e)));
