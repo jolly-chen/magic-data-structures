@@ -1,0 +1,3 @@
+ReflowComments: false
+MaxEmptyLinesToKeep: 1
+ColumnLimit:     120
