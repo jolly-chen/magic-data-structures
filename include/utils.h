@@ -18,6 +18,13 @@ template <class T> static constexpr bool is_span_v = requires {
   requires std::same_as<std::decay_t<T>, std::span<typename std::decay_t<T>::value_type>>;
 };
 
+template <class T> static constexpr bool is_mdspan_v = requires {
+  requires std::same_as < std::decay_t<T>, std::mdspan < typename std::decay_t<T>::value_type,
+  typename std::decay_t<T>::extents_type, typename std::decay_t<T>::layout_type,
+      typename std::decay_t<T>::accessor_type >>
+      ;
+};
+
 // https://stackoverflow.com/a/60491447
 template <class ContainerType>
 concept Container = is_span_v<ContainerType> || requires(ContainerType a, const ContainerType b) {
@@ -104,6 +111,13 @@ template <typename T> void print_member(T &v) {
       print_member(v[i]);
     }
     std::cout << "}";
+  } else if constexpr (is_mdspan_v<T>) { // FIXME:
+    std::cout << "{";
+    for (size_t i = 0; i < v.size(); i++) {
+      if (i != 0) std::cout << ", ";
+      std::cout << v.data_handle()[i];
+    }
+    std::cout << "}";
   } else {
     std::cout << v;
   }
@@ -114,9 +128,11 @@ template <typename T> void print_member_addr(T &v) {
     std::cout << "{";
     for (size_t i = 0; i < v.size(); i++) {
       if (i != 0) std::cout << ", ";
-      print_member(v[i]);
+      print_member_addr(v[i]);
     }
     std::cout << "}";
+  } else if constexpr (is_mdspan_v<T>) {
+
   } else {
     std::cout << (long long)&v;
   }

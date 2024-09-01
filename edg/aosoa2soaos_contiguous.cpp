@@ -3,6 +3,12 @@
 // container.
 // Run here: https://godbolt.org/z/P613hh8MG
 
+#define __cpp_lib_reflection 20240815
+
+#include "mdspan.h"
+#include "utils.h"
+
+#include <array>
 #include <concepts>
 #include <experimental/meta>
 #include <iostream>
@@ -11,85 +17,10 @@
 
 using namespace std::literals::string_view_literals;
 
-template <class T> static constexpr bool is_span_v = requires {
-  requires std::same_as<std::decay_t<T>, std::span<typename std::decay_t<T>::value_type>>;
-};
-
-// https://stackoverflow.com/a/60491447
-template <class ContainerType>
-concept Container = is_span_v<ContainerType> || requires(ContainerType a, const ContainerType b) {
-  requires std::regular<ContainerType>;
-  requires std::swappable<ContainerType>;
-  requires std::destructible<typename ContainerType::value_type>;
-  requires std::same_as<typename ContainerType::reference, typename ContainerType::value_type &>;
-  requires std::same_as<typename ContainerType::const_reference, const typename ContainerType::value_type &>;
-  requires std::forward_iterator<typename ContainerType::iterator>;
-  requires std::forward_iterator<typename ContainerType::const_iterator>;
-  requires std::signed_integral<typename ContainerType::difference_type>;
-  requires std::same_as<typename ContainerType::difference_type,
-                        typename std::iterator_traits<typename ContainerType::iterator>::difference_type>;
-  requires std::same_as<typename ContainerType::difference_type,
-                        typename std::iterator_traits<typename ContainerType::const_iterator>::difference_type>;
-  { a.begin() } -> std::same_as<typename ContainerType::iterator>;
-  { a.end() } -> std::same_as<typename ContainerType::iterator>;
-  { b.begin() } -> std::same_as<typename ContainerType::const_iterator>;
-  { b.end() } -> std::same_as<typename ContainerType::const_iterator>;
-  { a.cbegin() } -> std::same_as<typename ContainerType::const_iterator>;
-  { a.cend() } -> std::same_as<typename ContainerType::const_iterator>;
-  { a.size() } -> std::same_as<typename ContainerType::size_type>;
-  { a.max_size() } -> std::same_as<typename ContainerType::size_type>;
-  { a.empty() } -> std::same_as<bool>;
-};
-
-consteval auto type_is_container(std::meta::info r) -> bool {
-  return extract<bool>(std::meta::substitute(^Container, {
-                                                             r}));
-}
-
-///
-// Print utilities
-///
-
-template <typename T> void print_container(T &v) {
-  std::cout << "{";
-  for (size_t i = 0; i < v.size(); i++) {
-    if (i != 0)
-      std::cout << ", ";
-
-    if constexpr (Container<typename T::value_type>) {
-      print_container(v[i]);
-    } else {
-      std::cout << v[i];
-    }
-  }
-  std::cout << "}\n";
-}
-
-template <typename T> void print_container_addr(T &v) {
-  std::cout << "{";
-  for (size_t i = 0; i < v.size(); i++) {
-    if (i != 0)
-      std::cout << ", ";
-
-    if constexpr (Container<typename T::value_type>) {
-      print_container_addr(v[i]);
-    } else {
-      std::cout << (long long)&v[i];
-    }
-  }
-  std::cout << "}\n";
-}
-
 ///
 // Magic Data Structure
 ///
 namespace mds {
-consteval auto get_scalar_type(std::meta::info t) -> std::meta::info {
-  if (type_is_container(t)) {
-    return get_scalar_type(template_arguments_of(t)[0]);
-  }
-  return t;
-}
 
 consteval auto gen_sov_members(std::meta::info t) -> void {
   for (auto member : nonstatic_data_members_of(t)) {
@@ -97,8 +28,9 @@ consteval auto gen_sov_members(std::meta::info t) -> void {
       \id("_"sv, name_of(member))
     };
 
-    auto type = get_scalar_type(type_of(member));
-    if (type_is_container(type_of(member))) {
+    auto type = type_of(member);
+    if (type_is_container(type)) {
+      type = get_scalar_type(type);
       queue_injection(^{
         std::vector<sov_metadata> \id("_"sv, name_of(member), "_md"sv);
       });
@@ -112,13 +44,21 @@ consteval auto gen_sov_members(std::meta::info t) -> void {
 
 consteval auto gen_sor_members(std::meta::info t) -> void {
   for (auto member : nonstatic_data_members_of(t)) {
-    if (type_is_container(type_of(member))) {
+    auto type = type_of(member);
+    auto scalar_type = get_scalar_type(type);
+    if (type_is_eigen(type)) {
+      auto dim = reflect_value(template_arguments_of(type)[1]);
       queue_injection(^{
-        const std::span<typename[:\(get_scalar_type(type_of(member))):]>  \id(name_of(member));
+        const std::mdspan<typename[:\(scalar_type):], std::extents<size_t, [: \(dim):], [: \(dim):]>>  \id(
+            name_of(member));
       });
-    } else {
+    } else if (type_is_container(type)) {
       queue_injection(^{
-        const typename[:\(type_of(member)):] & \id(name_of(member));
+        const std::span<typename[:\(scalar_type):]>  \id(name_of(member));
+      });
+    } else { // scalar
+      queue_injection(^{
+        const typename[:\(type):] & \id(name_of(member));
       });
     }
   }
@@ -278,13 +218,14 @@ public:
 struct data {
   double x;
   std::vector<int> v;
-  // std::vector<std::vector<double>> p;
+  // std::vector<std::vector<double>> m;
+  EigenMatrix<float, 2> m;
 };
 
 int main() {
-  data e1 = {0, {100, 101, 102, 103}};
-  data e2 = {4, {200}};
-  data e3 = {8, {300, 301}};
+  data e1 = {0, {10, 11, 12, 13}, {{{100, 101}, {102, 103}}}};
+  data e2 = {4, {20}, {{{200, 201}, {202, 203}}}};
+  data e3 = {8, {30, 31}, {{{300, 301}, {302, 303}}}};
 
   mds::vector<data, 64> maos = {e1, e2, e3};
 
@@ -294,22 +235,14 @@ int main() {
 
     [:expand(nonstatic_data_members_of(^decltype(maos[i]))):] >> [&]<auto e> {
       std::cout << name_of(e) << ": ";
-      if constexpr (type_is_container(type_of(e))) {
-        print_container(maos[i].[:e:]);
-      } else {
-        std::cout << maos[i].[:e:] << ", ";
-      }
+      print_member(maos[i].[:e:]);
     };
 
     std::cout << ")\taddr = ";
 
     [:expand(nonstatic_data_members_of(^decltype(maos[i]))):] >> [&]<auto e> {
       std::cout << name_of(e) << ": ";
-      if constexpr (type_is_container(type_of(e))) {
-        print_container_addr(maos[i].[:e:]);
-      } else {
-        std::cout << (long long)&maos[i].[:e:] << ", ";
-      }
+      print_member_addr(maos[i].[:e:]);
     };
   }
 
@@ -323,9 +256,9 @@ int main() {
   [:expand(members_of(^mds::vector<data, 64>, std::meta::is_nonstatic_data_member, std::meta::is_accessible)
            ):] >> [&]<auto e> {
     std::cout << name_of(e) << " = ";
-    print_container(maos.[:e:]);
+    print_member(maos.[:e:]);
     std::cout << "\taddr = ";
-    print_container_addr(maos.[:e:]);
+    print_member_addr(maos.[:e:]);
   };
 
   return 0;
