@@ -33,8 +33,8 @@ concept Container = is_span_v<ContainerType> || requires(ContainerType a, const 
   requires std::destructible<typename ContainerType::value_type>;
   requires std::same_as<typename ContainerType::reference, typename ContainerType::value_type &>;
   requires std::same_as<typename ContainerType::const_reference, const typename ContainerType::value_type &>;
-  requires std::forward_iterator<typename ContainerType::iterator>;
-  requires std::forward_iterator<typename ContainerType::const_iterator>;
+  // requires std::forward_iterator<typename ContainerType::iterator>;
+  // requires std::forward_iterator<typename ContainerType::const_iterator>;
   requires std::signed_integral<typename ContainerType::difference_type>;
   requires std::same_as<typename ContainerType::difference_type,
                         typename std::iterator_traits<typename ContainerType::iterator>::difference_type>;
@@ -103,7 +103,7 @@ consteval auto get_scalar_type(std::meta::info t) -> std::meta::info {
 // Print utilities
 ///
 
-template <typename T> void print_member(T &v) {
+template <typename T> void print_member(const T &v) {
   if constexpr (Container<T>) {
     std::cout << "{";
     for (size_t i = 0; i < v.size(); i++) {
@@ -123,7 +123,7 @@ template <typename T> void print_member(T &v) {
   }
 }
 
-template <typename T> void print_member_addr(T &v) {
+template <typename T> void print_member_addr(const T &v) {
   if constexpr (Container<T>) {
     std::cout << "{";
     for (size_t i = 0; i < v.size(); i++) {

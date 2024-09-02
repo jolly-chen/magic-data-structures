@@ -24,21 +24,14 @@ namespace mds {
 
 consteval auto gen_sov_members(std::meta::info t) -> void {
   for (auto member : nonstatic_data_members_of(t)) {
-    auto vec_member = ^{
-      \id("_"sv, name_of(member))
-    };
+    auto vec_member = ^{ \id("_"sv, name_of(member)) };
 
     auto type = type_of(member);
-    if (type_is_container(type)) {
-      type = get_scalar_type(type);
-      queue_injection(^{
-        std::vector<sov_metadata> \id("_"sv, name_of(member), "_md"sv);
-      });
+    if (type_is_container(type) && !type_is_eigen(type)) {
+      queue_injection(^{ std::vector<sov_metadata> \id("_"sv, name_of(member), "_md"sv); });
     }
 
-    queue_injection(^{
-      std::span<typename[:\(type):]> \tokens(vec_member);
-    });
+    queue_injection(^{ std::span<typename[:\(get_scalar_type(type)):]> \tokens(vec_member); });
   }
 }
 
@@ -47,29 +40,27 @@ consteval auto gen_sor_members(std::meta::info t) -> void {
     auto type = type_of(member);
     auto scalar_type = get_scalar_type(type);
     if (type_is_eigen(type)) {
-      auto dim = reflect_value(template_arguments_of(type)[1]);
+      auto dim = extract<size_t>(template_arguments_of(type)[1]);
+      queue_injection(^{ using \id(name_of(member), "_extents"sv) = std::extents<size_t, \(dim), \(dim)>; });
       queue_injection(^{
-        const std::mdspan<typename[:\(scalar_type):], std::extents<size_t, [: \(dim):], [: \(dim):]>>  \id(
-            name_of(member));
+        const std::mdspan<typename[:\(scalar_type):], \id(name_of(member), "_extents"sv), std::layout_stride>
+          \id(name_of(member));
       });
     } else if (type_is_container(type)) {
-      queue_injection(^{
-        const std::span<typename[:\(scalar_type):]>  \id(name_of(member));
-      });
+      queue_injection(^{ const std::span<typename[:\(scalar_type):]>  \id(name_of(member)); });
     } else { // scalar
-      queue_injection(^{
-        const typename[:\(type):] & \id(name_of(member));
-      });
+      queue_injection(^{ const typename[:\(type):] & \id(name_of(member)); });
     }
   }
 }
 
-template <typename T, size_t Alignment> class vector {
+template <typename T, size_t Alignment>
+class vector {
 private:
   std::vector<std::byte> storage;
   size_t _size; // Number of elements
 
-public: // internal data public for debugging
+public: // internal stuff public for debugging
   struct sov_metadata {
     size_t offset, size;
     friend std::ostream &operator<<(std::ostream &os, const sov_metadata &obj) {
@@ -92,14 +83,17 @@ public: // internal data public for debugging
   // Compute the number of bytes needed for each storage vector and the total number of storage bytes.
   template <std::meta::info Member>
   auto compute_sizes(const std::initializer_list<T> data, size_t &size, size_t &byte_size) -> void {
-    if constexpr (type_is_container(type_of(Member))) {
+    constexpr auto type = type_of(Member);
+    if constexpr (type_is_eigen(type)) {
+      auto dim = extract<size_t>(template_arguments_of(type)[1]);
+      byte_size = align_size(sizeof(typename[:type_of(Member):][dim * data.size()]), Alignment);
+      size = dim * dim * data.size();
+    } else if constexpr (type_is_container(type_of(Member))) {
       using vec_type = typename[:type_of(Member):] ::value_type;
       for (auto &elem : data) {
         auto n_elements = elem.[:Member:].size();
         consteval {
-          queue_injection(^{
-            \id("_"sv, name_of(Member), "_md"sv).push_back({.offset = size, .size = n_elements});
-          });
+          queue_injection(^{ \id("_"sv, name_of(Member), "_md"sv).push_back({.offset = size, .size = n_elements}); });
         }
         byte_size += align_size(sizeof(vec_type[n_elements]), Alignment);
         size += n_elements;
@@ -112,6 +106,54 @@ public: // internal data public for debugging
     std::cout << "_" << name_of(Member) << " = " << size << " elements in " << byte_size << " bytes\n";
   }
 
+  template <std::meta::info Member>
+  auto fill_sov_matrix(const std::initializer_list<T> data) -> void {
+    using scalar_type = inner_type<typename[:type_of(Member):]>;
+
+    size_t e_idx = 0;
+    for (auto &elem : data) {
+      // TODO: arbitrary dimensions?
+      for (size_t i = 0; i < elem.[:Member:].size(); i++) {
+        for (size_t j = 0; j < elem.[:Member:][i].size(); j++) {
+          consteval {
+            // Element-wise contiguous
+            // e.g, new (&_m[e_idx]) float(elem.m[i,j]);
+            queue_injection(^{ new (&\id("_"sv, name_of(Member))[e_idx]) scalar_type(elem.[:Member:][i][j]); });
+          }
+          e_idx++;
+        }
+      }
+    }
+  }
+
+  template <std::meta::info Member>
+  auto fill_sov_container(const std::initializer_list<T> data) -> void {
+    using vec_type = inner_type<typename[:type_of(Member):]>;
+
+    size_t e_idx = 0;
+    for (auto &elem : data) {
+      for (size_t i = 0; i < elem.[:Member:].size(); i++) {
+        consteval {
+          // e.g, new (&_a[e_idx]) int(elem.a[i]);
+          queue_injection(^{ new (&\id("_"sv, name_of(Member))[e_idx]) vec_type(elem.[:Member:][i]); });
+        }
+        e_idx++;
+      }
+    }
+  }
+
+  template <std::meta::info Member>
+  auto fill_sov_scalar(const std::initializer_list<T> data) -> void {
+    size_t e_idx = 0;
+    for (auto &elem : data) {
+      consteval {
+        // e.g, new (&_x[e_idx]) double(elem.x);
+        queue_injection(^{ new (&\id("_"sv, name_of(Member))[e_idx]) decltype(elem.[:Member:])(elem.[:Member:]); });
+      }
+      e_idx++;
+    }
+  }
+
 public:
   vector(std::initializer_list<T> data) {
     auto n_members = [:std::meta::reflect_value(nonstatic_data_members_of(^T).size()):];
@@ -121,8 +163,8 @@ public:
     byte_sizes.resize(n_members);
     size_t total_byte_size = 0;
     size_t m_idx = 0;
-    [:expand(nonstatic_data_members_of(^T)):] >> [&]<auto e> {
-      compute_sizes<e>(data, sizes[m_idx], byte_sizes[m_idx]);
+    [:expand(nonstatic_data_members_of(^T)):] >> [&]<auto member> {
+      compute_sizes<member>(data, sizes[m_idx], byte_sizes[m_idx]);
       total_byte_size += byte_sizes[m_idx++];
     };
 
@@ -132,48 +174,30 @@ public:
     // Loop over storage vectors
     size_t offset = 0;
     m_idx = 0;
-    [:expand(nonstatic_data_members_of(^T)):] >> [&]<auto e> {
+    [:expand(nonstatic_data_members_of(^T)):] >> [&]<auto member> {
       // reading sizes directly in queue injection doesn't seem to work?
       // results in a "cannot capture sizes" error
       auto sov_size = sizes[m_idx];
 
       consteval {
-        auto name = name_of(e);
-        auto type = get_scalar_type(type_of(e));
+        auto name = name_of(member);
+        auto type = get_scalar_type(type_of(member));
 
         // Assign required bytes to storage vector e.g.,
         //    _x = std::span(reinterpret_cast<double*>(storage.data()) + offset,
         //                   sizes[m_idx]);
-        queue_injection(^{
-          \id("_"sv, name) = std::span(reinterpret_cast<[: \(type):] *>(storage.data() + offset), sov_size);
-        });
+        queue_injection(
+            ^{ \id("_"sv, name) = std::span(reinterpret_cast<[: \(type):] *>(storage.data() + offset), sov_size); });
       }
       offset += byte_sizes[m_idx++];
 
       // Fill storage spans
-      size_t e_idx = 0;
-      for (auto &elem : data) {
-        if constexpr (type_is_container(type_of(e))) {
-          using vec_type = typename[:type_of(e):] ::value_type;
-
-          for (size_t i = 0; i < elem.[:e:].size(); i++) {
-            consteval {
-              // e.g, new (&_a[e_idx]) double(elem.x);
-              queue_injection(^{
-                new (&\id("_"sv, name_of(e))[e_idx]) vec_type(elem.[:e:][i]);
-              });
-            }
-            e_idx++;
-          }
-        } else {
-          consteval {
-            // e.g, new (&_x[e_idx]) double(elem.x);
-            queue_injection(^{
-              new (&\id("_"sv, name_of(e))[e_idx]) decltype(elem.[:e:])(elem.[:e:]);
-            });
-          }
-          e_idx++;
-        }
+      if constexpr (type_is_eigen(type_of(member))) {
+        fill_sov_matrix<member>(data);
+      } else if constexpr (type_is_container(type_of(member))) {
+        fill_sov_container<member>(data);
+      } else {
+        fill_sov_scalar<member>(data);
       }
     };
   }
@@ -181,34 +205,37 @@ public:
   auto size() const -> std::size_t { return _size; }
 
   auto operator[](std::size_t m_idx) const -> aos_view {
-    consteval {
-      // gather references to sov elements
+    consteval { // gather references to sov elements
       std::meta::list_builder member_data_tokens{};
       for (auto member : nonstatic_data_members_of(^T)) {
         auto name = name_of(member);
-        auto sov_name = ^{
-          \id("_"sv, name)
-        };
+        auto type = type_of(member);
+        auto sov_name = ^{ \id("_"sv, name) };
 
-        if (type_is_container(type_of(member))) {
-          auto md_name = ^{
-            \id("_"sv, name, "_md"sv)
-          };
+        if (type_is_eigen(type)) {
+          auto dim = extract<size_t>(template_arguments_of(type)[1]);
+          auto extents = ^{ typename aos_view::\id(name, "_extents"sv){} };
+          auto stride = ^{ std::array<size_t, 2> {_size * \(dim), _size} };
           member_data_tokens += ^{
-            .\id(name) = \tokens(sov_name).subspan(\tokens(md_name)[m_idx].offset, \tokens(md_name)[m_idx].size)
+            .\id(name) = { \tokens(sov_name).data() + m_idx, {\tokens(extents), \tokens(stride)} }
           };
+            // member_data_tokens += ^{
+            // .\id(name) = {
+            //   \tokens(sov_name).data() + m_idx, {typename aos_view::\id(name, "_extents"sv){} , std::array<size_t, 2> {_size * \(dim), _size} }
+            // }
+          // };
+        } else if (type_is_container(type)) {
+          auto md_name = ^{ \id("_"sv, name, "_md"sv) };
+          member_data_tokens +=
+              ^{ .\id(name) = \tokens(sov_name).subspan(\tokens(md_name)[m_idx].offset, \tokens(md_name)[m_idx].size) };
         } else {
-          member_data_tokens += ^{
-            .\id(name) = \tokens(sov_name)[m_idx]
-          };
+          member_data_tokens += ^{ .\id(name) = \tokens(sov_name)[m_idx] };
         }
       }
 
       // Injects:
       //     return aos_view(.x = _x[idx], .v = _v.subspan(_v_md[idx].offset, _v_md[idx].size));
-      queue_injection(^{
-        return aos_view{\tokens(member_data_tokens)};
-      });
+      queue_injection(^{ return aos_view{\tokens(member_data_tokens)}; });
     }
   }
 };
@@ -229,20 +256,22 @@ int main() {
 
   mds::vector<data, 64> maos = {e1, e2, e3};
 
-  std::cout << "maos.size = " << maos.size() << "\n";
+  std::cout << "maos.size = " << maos.size();
   for (size_t i = 0; i != maos.size(); ++i) {
-    std::cout << "maos[" << i << "] = (";
+    std::cout << "\nmaos[" << i << "] = (\n";
 
     [:expand(nonstatic_data_members_of(^decltype(maos[i]))):] >> [&]<auto e> {
-      std::cout << name_of(e) << ": ";
+      std::cout << "\t" << name_of(e) << ": ";
       print_member(maos[i].[:e:]);
+      std::cout << "\n";
     };
 
-    std::cout << ")\taddr = ";
+    std::cout << ")\naddr:\n";
 
     [:expand(nonstatic_data_members_of(^decltype(maos[i]))):] >> [&]<auto e> {
-      std::cout << name_of(e) << ": ";
+      std::cout << "\t" << name_of(e) << ": ";
       print_member_addr(maos[i].[:e:]);
+      std::cout << "\n";
     };
   }
 
@@ -255,9 +284,9 @@ int main() {
   // - nonstatic_data_members_of doesn't accept filters
   [:expand(members_of(^mds::vector<data, 64>, std::meta::is_nonstatic_data_member, std::meta::is_accessible)
            ):] >> [&]<auto e> {
-    std::cout << name_of(e) << " = ";
+    std::cout << "\n" << name_of(e) << " = ";
     print_member(maos.[:e:]);
-    std::cout << "\taddr = ";
+    std::cout << "\n\taddr = ";
     print_member_addr(maos.[:e:]);
   };
 
