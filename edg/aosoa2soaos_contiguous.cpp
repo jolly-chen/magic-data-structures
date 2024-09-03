@@ -41,11 +41,18 @@ consteval auto gen_sor_members(std::meta::info t) -> void {
     auto scalar_type = get_scalar_type(type);
     if (type_is_eigen(type)) {
       auto dim = extract<size_t>(template_arguments_of(type)[1]);
-      queue_injection(^{ using \id(name_of(member), "_extents"sv) = std::extents<size_t, \(dim), \(dim)>; });
+      queue_injection(^{ using \id(name_of(member), "_extents"sv) = extents<size_t, \(dim), \(dim)>; });
       queue_injection(^{
-        const std::mdspan<typename[:\(scalar_type):], \id(name_of(member), "_extents"sv), std::layout_stride>
-          \id(name_of(member));
+        const mdspan<typename[:\(scalar_type):], \id(name_of(member), "_extents"sv), layout_stride> \id(
+            name_of(member));
       });
+
+      // queue_injection(^{ using \id("m_extents"sv) = extents<size_t, 2, 2>; });
+      // queue_injection(^{
+      //   const mdspan<float, extents<size_t, 2ul, 2ul>,
+      //                     // const mdspan<float, extents<size_t, std::dynamic_extent, std::dynamic_extent>,
+      //                     layout_stride, std::default_accessor<float>> \id("m"sv);
+      // });
     } else if (type_is_container(type)) {
       queue_injection(^{ const std::span<typename[:\(scalar_type):]>  \id(name_of(member)); });
     } else { // scalar
@@ -85,7 +92,7 @@ public: // internal stuff public for debugging
   auto compute_sizes(const std::initializer_list<T> data, size_t &size, size_t &byte_size) -> void {
     constexpr auto type = type_of(Member);
     if constexpr (type_is_eigen(type)) {
-      auto dim = extract<size_t>(template_arguments_of(type)[1]);
+      constexpr auto dim = extract<size_t>(template_arguments_of(type)[1]);
       byte_size = align_size(sizeof(typename[:type_of(Member):][dim * data.size()]), Alignment);
       size = dim * dim * data.size();
     } else if constexpr (type_is_container(type_of(Member))) {
@@ -109,12 +116,13 @@ public: // internal stuff public for debugging
   template <std::meta::info Member>
   auto fill_sov_matrix(const std::initializer_list<T> data) -> void {
     using scalar_type = inner_type<typename[:type_of(Member):]>;
+    constexpr auto dim = extract<size_t>(template_arguments_of(type_of(Member))[1]);
 
     size_t e_idx = 0;
-    for (auto &elem : data) {
-      // TODO: arbitrary dimensions?
-      for (size_t i = 0; i < elem.[:Member:].size(); i++) {
-        for (size_t j = 0; j < elem.[:Member:][i].size(); j++) {
+    // TODO: arbitrary dimensions?
+    for (size_t i = 0; i < dim; i++) {
+      for (size_t j = 0; j < dim; j++) {
+        for (auto &elem : data) {
           consteval {
             // Element-wise contiguous
             // e.g, new (&_m[e_idx]) float(elem.m[i,j]);
@@ -204,7 +212,7 @@ public:
 
   auto size() const -> std::size_t { return _size; }
 
-  auto operator[](std::size_t m_idx) const -> aos_view {
+  auto operator[](std::size_t idx) const -> aos_view {
     consteval { // gather references to sov elements
       std::meta::list_builder member_data_tokens{};
       for (auto member : nonstatic_data_members_of(^T)) {
@@ -214,24 +222,47 @@ public:
 
         if (type_is_eigen(type)) {
           auto dim = extract<size_t>(template_arguments_of(type)[1]);
-          auto extents = ^{ typename aos_view::\id(name, "_extents"sv){} };
-          auto stride = ^{ std::array<size_t, 2> {_size * \(dim), _size} };
-          member_data_tokens += ^{
-            .\id(name) = { \tokens(sov_name).data() + m_idx, {\tokens(extents), \tokens(stride)} }
+          auto extents = ^{ typename aos_view::\id(name, "_extents"sv) };
+          auto stride = ^{
+            std::array<size_t, 2> {
+              _size * \(dim), _size
+            }
           };
-            // member_data_tokens += ^{
-            // .\id(name) = {
-            //   \tokens(sov_name).data() + m_idx, {typename aos_view::\id(name, "_extents"sv){} , std::array<size_t, 2> {_size * \(dim), _size} }
+          member_data_tokens += ^{
+            .\id(name) = { \tokens(sov_name).data() + idx, {\tokens(extents){}, \tokens(stride)} }
+
+            // .\id(name) = mdspan<typename[:\(get_scalar_type(type)):], \tokens(extents), layout_stride> {
+            //   \tokens(sov_name).data() + idx, {
+            //     \tokens(extents){}, \tokens(stride)
+            //   }
             // }
-          // };
+
+            // .\id(name) = {
+            //   \tokens(sov_name).data() + m_idx,
+            //   {extents<size_t, 2, 2>{}, std::array<size_t, 2>{_size * \(dim), _size}}
+            // }
+
+            // .\id(name) = {
+            //     \id("_m"sv).data(), {extents<size_t, 2ul, 2ul>{}, std::array<size_t, 2>{3 * 2, 3}} }
+
+            // .m = mdspan<float, extents<size_t, 2, 2>, layout_stride, std::default_accessor<float>> {
+            //   test, {
+            //     extents<size_t, 2ul, 2ul>{}, std::array<size_t, 2> {
+            //       3 * 2, 3
+            //     }
+            //   }
+            // }
+          };
         } else if (type_is_container(type)) {
           auto md_name = ^{ \id("_"sv, name, "_md"sv) };
           member_data_tokens +=
-              ^{ .\id(name) = \tokens(sov_name).subspan(\tokens(md_name)[m_idx].offset, \tokens(md_name)[m_idx].size) };
+              ^{ .\id(name) = \tokens(sov_name).subspan(\tokens(md_name)[idx].offset, \tokens(md_name)[idx].size) };
         } else {
-          member_data_tokens += ^{ .\id(name) = \tokens(sov_name)[m_idx] };
+          member_data_tokens += ^{ .\id(name) = \tokens(sov_name)[idx] };
         }
       }
+
+      __report_tokens(member_data_tokens);
 
       // Injects:
       //     return aos_view(.x = _x[idx], .v = _v.subspan(_v_md[idx].offset, _v_md[idx].size));
@@ -245,7 +276,6 @@ public:
 struct data {
   double x;
   std::vector<int> v;
-  // std::vector<std::vector<double>> m;
   EigenMatrix<float, 2> m;
 };
 
@@ -265,6 +295,19 @@ int main() {
       print_member(maos[i].[:e:]);
       std::cout << "\n";
     };
+
+    auto md = maos[i].m;
+    for (size_t j = 0; j < md.extent(0); j++) {
+      if (j != 0) std::cout << ", ";
+      std::cout << "{";
+      for (size_t k = 0; k < md.extent(1); k++) {
+        if (k != 0) std::cout << ", ";
+        // std::cout << md[j, k];
+        std::cout << md(j, k);
+      }
+      std::cout << "}";
+    }
+    std::cout << "} )\n";
 
     std::cout << ")\naddr:\n";
 
@@ -289,6 +332,8 @@ int main() {
     std::cout << "\n\taddr = ";
     print_member_addr(maos.[:e:]);
   };
+
+  std::cout << "\n";
 
   return 0;
 }

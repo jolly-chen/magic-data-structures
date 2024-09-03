@@ -63,12 +63,14 @@ namespace std _GLIBCXX_VISIBILITY(default) {
   // may be defined somewhere else other than <mdspan>
   template <typename> inline constexpr bool __enable_tuple_like = false;
 
+#if __GNUC__ < 14
   template <typename _Tp>
   concept __tuple_like = __enable_tuple_like<remove_cvref_t<_Tp>>;
 
   template <typename _Tp>
   concept __pair_like = __tuple_like<_Tp> && tuple_size_v<remove_cvref_t<_Tp>>
   == 2;
+#endif
 
   // specialization of __tuple_like for pair
   template <typename _T1, typename _T2> inline constexpr bool __enable_tuple_like<pair<_T1, _T2>> = true;

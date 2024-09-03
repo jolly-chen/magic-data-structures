@@ -1,4 +1,3 @@
-#include "mdspan.h"
 #include "utils.h"
 
 #include <array>
@@ -12,7 +11,8 @@ constexpr size_t mDim = 2;
 
 namespace mds {
 
-template <typename T, size_t Alignment> class vector {
+template <typename T, size_t Alignment>
+class vector {
 public:
   std::vector<std::byte> storage;
 
@@ -34,11 +34,11 @@ public:
   std::vector<sov_metadata> _v_md;
 
   struct aos_view {
-    using m_extents = std::extents<size_t, mDim, mDim>;
+    using m_extents = extents<size_t, mDim, mDim>;
 
     const double &x;
     const std::span<int> v;
-    const std::mdspan<float, m_extents, std::layout_stride> m;
+    const mdspan<float, m_extents, layout_stride> m;
   };
 
   // Helper function to compute aligned size
@@ -119,8 +119,9 @@ public:
   auto operator[](std::size_t idx) const -> aos_view {
     auto m_stride = std::array<size_t, 2>{_size * mDim, _size};
 
-    return aos_view(_x[idx], _v.subspan(_v_md[idx].offset, _v_md[idx].size),
-                    {_m.data() + idx, {typename aos_view::m_extents{}, m_stride}});
+    return aos_view{.x = _x[idx],
+                    .v = _v.subspan(_v_md[idx].offset, _v_md[idx].size),
+                    .m = {_m.data() + idx, {typename aos_view::m_extents{}, m_stride}}};
   }
 };
 } // namespace mds
@@ -149,7 +150,8 @@ int main() {
       std::cout << "{";
       for (size_t k = 0; k < md.extent(1); k++) {
         if (k != 0) std::cout << ", ";
-        std::cout << md[j, k];
+        // std::cout <<  (long long) &md[j, k];
+        std::cout << md(j, k);
       }
       std::cout << "}";
     }
@@ -166,7 +168,8 @@ int main() {
       std::cout << "{";
       for (size_t k = 0; k < md.extent(1); k++) {
         if (k != 0) std::cout << ", ";
-        std::cout <<  (long long) &md[j, k];
+        // std::cout <<  (long long) &md[j, k];
+        std::cout <<  (long long) &md(j, k);
       }
       std::cout << "}";
     }
